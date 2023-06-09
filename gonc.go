@@ -13,23 +13,26 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	flag "github.com/opencoff/pflag"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
+
+	flag "github.com/opencoff/pflag"
 )
 
 // Go command line option parsing truly sucks - especially in
 // comparison to getopt_long(3) or python optparse.
 
 // These are command line flags we process
+// var f_bidir = flag.BoolP("bidirectional", "b", false, "Do I/O in both directions")
 var f_cksum = flag.BoolP("checksum", "c", false, "Compute SHA256 checksum on all network I/O")
 var f_stats = flag.BoolP("statistics", "s", false, "Show traffic statistics")
 var f_listen = flag.BoolP("listen", "l", false, "Work in listen mode")
-var f_bidir = flag.BoolP("bidirectional", "b", false, "Do I/O in both directions")
 var f_verbos = flag.BoolP("verbose", "v", false, "Show verbose progress messages")
 var f_hex = flag.BoolP("hexdump", "x", false, "Show hexdump of traffic")
+var f_timeout = flag.UintP("timeout", "w", uint(0), "Connection timeout seconds")
 
 // I/O hunk size
 var bufsiz int = 4 * 1048576
@@ -37,21 +40,21 @@ var bufsiz int = 4 * 1048576
 func main() {
 
 	flag.Usage = func() {
-		fmt.Fprintf(flag.Output(), "Usage: %s [options] server:port\nOptions: (defaults in '[ ]')\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options] server:port\nOptions: [default]\n", filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
 
 	flag.Parse()
 	args := flag.Args()
 	if len(args) < 1 {
-		die("Usage: %s [options] server:port\n", os.Args[0])
+		die("Usage: %s [options] server:port\n", filepath.Base(os.Args[0]))
 	}
 
 	addr := args[0]
-	n_ch := 1
-	if *f_bidir {
-		n_ch += 1
-	}
+	n_ch := 2
+	// if *f_bidir {
+	// 	n_ch += 1
+	// }
 
 	ch := make(chan retval, n_ch)
 	var conn net.Conn
@@ -76,33 +79,43 @@ func main() {
 
 		o := io_obj{peer}
 		go o.counting_io(conn, os.Stdout, "from", ch)
-		if *f_bidir {
-			go o.counting_io(os.Stdin, conn, "to", ch)
-		}
+		go o.counting_io(os.Stdin, conn, "to", ch)
+		// if *f_bidir {
+		// 	go o.counting_io(os.Stdin, conn, "to", ch)
+		// }
 	} else {
 		verbose("Connecting to %s...\n", addr)
-		conn, err = net.Dial("tcp", addr)
-		if err != nil {
-			die("Can't connect to %s: %s\n", addr, err)
+		if *f_timeout == 0 {
+			conn, err = net.Dial("tcp", addr)
+			if err != nil {
+				die("Can't connect to %s: %s\n", addr, err)
+			}
+		} else {
+			conn, err = net.DialTimeout("tcp", addr, time.Duration(*f_timeout)*time.Second)
+			if err != nil {
+				die("Can't connect to %s: %s\n", addr, err)
+			}
 		}
+		verbose("Connection to %s succeeded!\n", addr)
 
 		o := io_obj{conn.RemoteAddr().String()}
 
 		go o.counting_io(os.Stdin, conn, "to", ch)
-		if *f_bidir {
-			go o.counting_io(conn, os.Stdout, "from", ch)
-		}
+		go o.counting_io(conn, os.Stdout, "from", ch)
+		// if *f_bidir {
+		// 	go o.counting_io(conn, os.Stdout, "from", ch)
+		// }
 	}
 
-	verbose("Waiting for %d goroutines to end ..\n", n_ch)
+	// verbose("Waiting for %d goroutines to end ..\n", n_ch)
 	errcode := 0
 	for i := 0; i < n_ch; i++ {
 		r := <-ch
 		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", r.err)
+			fmt.Fprintf(os.Stderr, "%s", r.err)
 			errcode++
 		} else {
-			fmt.Fprintf(os.Stderr, "%s\n", r.str)
+			fmt.Fprintf(os.Stdout, "%s", r.str)
 		}
 	}
 
@@ -222,7 +235,7 @@ func (o *io_obj) counting_io(rd io.Reader, wr io.Writer, dir string, ch chan ret
 	if *f_stats {
 		verbose("%d bytes %s %s in %3.2f s\n", n, dir, o.addr, float64(tot)/1.0e9)
 		sz, units := human(n)
-		speed := (sz * float64(time.Second))/ float64(tot)
+		speed := (sz * float64(time.Second)) / float64(tot)
 
 		msg += fmt.Sprintf("%4.1f %s (%4.1f %s/s) %s %s", sz, units, speed, units, dir, o.addr)
 	}
@@ -239,11 +252,11 @@ func (o *io_obj) counting_io(rd io.Reader, wr io.Writer, dir string, ch chan ret
 
 const (
 	_KB uint64 = 1024
-	_MB = 1024 * _KB
-	_GB = 1024 * _MB
-	_TB = 1024 * _GB
-	_PB = 1024 * _TB
-	_EB = 1024 * _PB
+	_MB        = 1024 * _KB
+	_GB        = 1024 * _MB
+	_TB        = 1024 * _GB
+	_PB        = 1024 * _TB
+	_EB        = 1024 * _PB
 )
 
 // human readable units
